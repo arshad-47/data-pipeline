@@ -201,10 +201,10 @@ class MentoringMetabaseDashboardFunction(config: MentoringMetabaseDashboardConfi
 
         // Step 1: create question cards
         val reportConfigQuery =
-          s"SELECT question_type, config FROM $reportConfig WHERE dashboard_name = 'Mentoring Reports' AND report_name = 'Org Admin' AND question_type IN ('big-number', 'graph');"
+          s"SELECT question_type, config FROM $reportConfig WHERE dashboard_name = 'Mentoring-Reports' AND report_name = 'Org Admin' AND question_type IN ('big-number', 'graph');"
 
-        val questionCards: scala.collection.immutable.Seq[ObjectNode] =
-          ProcessTenantConstructor.ProcessAndUpdateJsonFiles(
+        val questionCardIdList =
+          ProcessOrgConstructor.ProcessAndUpdateJsonFiles(
             reportConfigQuery, collectionId, databaseId, dashboardId,
             stateNameId, districtNameId, blockNameId, clusterNameId, schoolNameId,
             tenantUserTable, tenantSessionTable, tenantSessionAttendanceTable,
@@ -216,13 +216,9 @@ class MentoringMetabaseDashboardFunction(config: MentoringMetabaseDashboardConfi
         val parametersQuery =
           s"SELECT config FROM $reportConfig WHERE report_name = 'Org Admin' AND question_type = 'org-parameters'"
 
-        val slugToFilterId: Map[String, String] =
-          UpdateParameters.buildFilterSlugMap(postgresUtil, parametersQuery)
-            .map { case (slug, id) => slug -> id }
-
         // Step 3: map filters to question cards
-        UpdateParameters.updateDashboardParameters(metabaseUtil, dashboardId, questionCards, slugToFilterId)
-        val questionIdsString = "[" + questionCards.map(_.path("id").asInt()).mkString(",") + "]"
+        UpdateParameters.UpdateAdminParameterFunction(metabaseUtil, parametersQuery, dashboardId, postgresUtil)
+        val questionIdsString = "[" + questionCardIdList.mkString(",") + "]"
 
 //        UpdateParameters.pushQuestionCardsToDashboard(metabaseUtil, dashboardId, questionCards)
 
@@ -255,13 +251,7 @@ class MentoringMetabaseDashboardFunction(config: MentoringMetabaseDashboardConfi
     }
 
 
-    def getTheTableId(
-                       databaseId: Int,
-                       tableName: String,
-                       metabaseUtil: MetabaseUtil,
-                       metabasePostgresUtil: PostgresUtil,
-                       metabaseApiKey: String
-                     ): Int = {
+    def getTheTableId(databaseId: Int, tableName: String, metabaseUtil: MetabaseUtil, metabasePostgresUtil: PostgresUtil, metabaseApiKey: String): Int = {
       storedTableIds.get((databaseId, tableName)) match {
         case Some(tableId) =>
           println(s"[CACHE-HIT] Table ID for '$tableName' in DB $databaseId = $tableId")
@@ -292,15 +282,7 @@ class MentoringMetabaseDashboardFunction(config: MentoringMetabaseDashboardConfi
       }
     }
 
-    def getTheColumnId(
-                        databaseId: Int,
-                        tableName: String,
-                        columnName: String,
-                        metabaseUtil: MetabaseUtil,
-                        metabasePostgresUtil: PostgresUtil,
-                        metabaseApiKey: String,
-                        metaTableQuery: String
-                      ): Int = {
+    def getTheColumnId(databaseId: Int, tableName: String, columnName: String, metabaseUtil: MetabaseUtil, metabasePostgresUtil: PostgresUtil, metabaseApiKey: String, metaTableQuery: String): Int = {
       try {
         val tableId = getTheTableId(databaseId, tableName, metabaseUtil, metabasePostgresUtil, metabaseApiKey)
 

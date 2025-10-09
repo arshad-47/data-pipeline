@@ -1,143 +1,119 @@
 package org.shikshalokam.job.mentoring.dashboard.creator.functions
 
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import org.shikshalokam.job.util.{MetabaseUtil, PostgresUtil}
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable
 
 object UpdateParameters {
+  def updateParameterFunction(metabaseUtil: MetabaseUtil, postgresUtil: PostgresUtil, parametersQuery: String, slugNameToStateIdMap: Map[String, Int], dashboardId: Int): Unit = {
+    println(s"-----------Started Processing State dashboard parameter ------------")
 
-  private val objectMapper = new ObjectMapper()
+    val objectMapper = new ObjectMapper()
+    val parameterData: List[Any] = postgresUtil.fetchData(parametersQuery).flatMap(_.get("config"))
+    val parameterJsonString: String = parameterData.headOption match {
+      case Some(value: String) if value.nonEmpty => value
+      case Some(value) if value.toString.nonEmpty => value.toString
+      case _ => throw new Exception("Invalid or empty parameter data found")
+    }
 
-  /**
-   * Build a slug -> filterCardId map from Postgres config
-   * Handles IDs as strings or integers
-   */
-  def buildFilterSlugMap(
-                          postgresUtil: PostgresUtil,
-                          filterConfigQuery: String
-                        ): Map[String, String] = {  // Use String for uniformity
-    val filterResults = postgresUtil.fetchData(filterConfigQuery)
-    val slugToFilterId = mutable.Map[String, String]()
+    val parameterJson: ArrayNode = objectMapper.readTree(parameterJsonString) match {
+      case array: ArrayNode => array
+      case _ => throw new Exception("Expected parameter data to be an ArrayNode")
+    }
 
-    println(s"[DEBUG] Fetched ${filterResults.size} filter rows from Postgres")
+    val updatedParameterJson = try {
+      parameterJson.elements().asScala.flatMap { param =>
+        try {
+          if (param.isInstanceOf[ObjectNode]) {
+            val updatedParam = param.asInstanceOf[ObjectNode]
+            val slug = updatedParam.path("slug").asText()
 
-    for ((row, idx) <- filterResults.zipWithIndex) {
-      try {
-        val configStr = row.getOrElse("config", "[]").toString
-        println(s"[DEBUG] Row $idx config string: $configStr")
-        val configJson = objectMapper.readTree(configStr)
-
-        configJson match {
-          case arr if arr.isArray =>
-            arr.elements().asScala.foreach { filterJson =>
-              val slug = filterJson.path("slug").asText()
-              val cardId = filterJson.path("id").asText()
-              if (cardId.nonEmpty) slugToFilterId(slug) = cardId
+            slugNameToStateIdMap.get(slug) match {
+              case Some(newCardId) =>
+                val valuesSourceConfigNode = updatedParam.path("values_source_config")
+                if (valuesSourceConfigNode.isObject) {
+                  val valuesSourceConfig = valuesSourceConfigNode.asInstanceOf[ObjectNode]
+                  valuesSourceConfig.put("card_id", newCardId)
+                  updatedParam.set("values_source_config", valuesSourceConfig)
+                }
+                Some(updatedParam)
+              case None =>
+                println(s"No card_id found for slug '$slug', skipping update")
+                None
             }
-          case obj if obj.isObject =>
-            val slug = obj.path("slug").asText()
-            val cardId = obj.path("id").asText()
-            if (cardId.nonEmpty) slugToFilterId(slug) = cardId
-          case other =>
-            println(s"[WARN] Row $idx has invalid config type: $other")
+          } else {
+            println(s"Skipping param as it is not of type ObjectNode: ${param.toString}")
+            None
+          }
+        } catch {
+          case e: Exception =>
+            println(s"Error processing param: ${param.toString}")
+            println(s"Error: ${e.getMessage}")
+            None
         }
-
-      } catch {
-        case ex: Exception =>
-          println(s"[EXCEPTION] Error processing row $idx: ${ex.getMessage}")
-          ex.printStackTrace()
-      }
+      }.toList
+    } catch {
+      case e: Exception =>
+        println(s"Error during JSON processing: ${e.getMessage}")
+        e.printStackTrace()
+        List.empty
     }
+    val dashboardResponse = metabaseUtil.getDashboardDetailsById(dashboardId)
+    val dashboardJson = objectMapper.readTree(dashboardResponse)
+    val currentParametersJson = dashboardJson.path("parameters").asInstanceOf[ArrayNode]
 
-    println(s"[INFO] Slug to FilterCardId Map: ${slugToFilterId.toMap}")
-    slugToFilterId.toMap
+    val finalParametersJson = (currentParametersJson.elements().asScala.filterNot { param =>
+      val slug = param.path("slug").asText()
+      slugNameToStateIdMap.contains(slug)
+    }.toList ++ updatedParameterJson).distinct
+
+    val finalParametersArray = objectMapper.createArrayNode()
+    finalParametersJson.foreach(finalParametersArray.add)
+    val updatePayload = objectMapper.createObjectNode()
+    updatePayload.set("parameters", finalParametersArray)
+
+    metabaseUtil.addQuestionCardToDashboard(dashboardId, updatePayload.toString)
+    println(s"----------------Successfully updated State dashboard parameter----------------")
   }
 
-  /**
-   * Update dashboard parameters: map existing filters to cards using slug
-   * Pushes all cards to the dashboard
-   */
-  def updateDashboardParameters(
-                                 metabaseUtil: MetabaseUtil,
-                                 dashboardId: Int,
-                                 questionCards: Seq[ObjectNode],
-                                 slugToFilterId: Map[String, String]  // IDs as string
-                               ): Unit = {
+  def UpdateAdminParameterFunction(metabaseUtil: MetabaseUtil, parametersQuery: String, dashboardId: Int, postgresUtil: PostgresUtil): Unit = {
+    println(s"-----------Started Processing Admin dashboard parameter ------------")
 
-    println(s"[DEBUG] Updating dashboard parameters for ${questionCards.size} cards")
-
-    val dashcardsArray: ArrayNode = objectMapper.createArrayNode()
-
-    questionCards.foreach { cardJson =>
-      val dashcard: ObjectNode = objectMapper.createObjectNode()
-      dashcard.put("card_id", cardJson.path("id").asText())
-      dashcard.put("col", cardJson.path("col").asInt(0))
-      dashcard.put("row", cardJson.path("row").asInt(0))
-      dashcard.put("size_x", cardJson.path("size_x").asInt(6))
-      dashcard.put("size_y", cardJson.path("size_y").asInt(4))
-
-      val paramMappingsArray: ArrayNode = objectMapper.createArrayNode()
-
-      slugToFilterId.foreach { case (slug, filterId) =>
-        val mapping = objectMapper.createObjectNode()
-        mapping.put("parameter_id", filterId)
-        mapping.put("card_id", cardJson.path("id").asText())
-
-        val targetArray = objectMapper.createArrayNode()
-        val templateTagArray = objectMapper.createArrayNode()
-        templateTagArray.add(slug)
-        targetArray.add("dimension")
-        targetArray.add(templateTagArray)
-        mapping.set("target", targetArray)
-
-        println(s"[DEBUG] Mapping slug='$slug' parameter_id='$filterId' → card_id='${cardJson.path("id").asText()}'")
-
-        paramMappingsArray.add(mapping)
-      }
-
-      dashcard.set("parameter_mappings", paramMappingsArray)
-      dashcardsArray.add(dashcard)
+    val objectMapper = new ObjectMapper()
+    val parameterData: List[Any] = postgresUtil.fetchData(parametersQuery).flatMap(_.get("config"))
+    val parameterJsonString: String = parameterData.headOption match {
+      case Some(value: String) => value
+      case Some(value) => value.toString
+      case None => throw new Exception("No parameter data found")
     }
 
-    val payload: ObjectNode = objectMapper.createObjectNode()
-    payload.set("dashcards", dashcardsArray)
-
-    val response = metabaseUtil.addQuestionCardToDashboard(dashboardId, payload.toString)
-    println(s"✔ Successfully updated dashboard parameters for $dashboardId | Response: $response")
-    UpdateParameters.pushQuestionCardsToDashboard(metabaseUtil, dashboardId, questionCards)
-  }
-
-  def pushQuestionCardsToDashboard(
-                                    metabaseUtil: MetabaseUtil,
-                                    dashboardId: Int,
-                                    questionCards: Seq[ObjectNode]
-                                  ): Unit = {
-
-    println(s"[DEBUG] Pushing ${questionCards.size} question cards to dashboard $dashboardId")
-
-    val dashcardsArray: ArrayNode = objectMapper.createArrayNode()
-
-    questionCards.foreach { cardJson =>
-      val dashcard: ObjectNode = objectMapper.createObjectNode()
-      dashcard.put("card_id", cardJson.path("id").asText())
-      dashcard.put("col", cardJson.path("col").asInt(0))
-      dashcard.put("row", cardJson.path("row").asInt(0))
-      dashcard.put("size_x", cardJson.path("size_x").asInt(6))
-      dashcard.put("size_y", cardJson.path("size_y").asInt(4))
-
-      // No parameter mappings here, just pushing cards
-      dashcardsArray.add(dashcard)
-      println(s"[DEBUG] Added card_id='${cardJson.path("id").asText()}' to dashboard payload")
+    val parameterJson: ArrayNode = objectMapper.readTree(parameterJsonString) match {
+      case array: ArrayNode => array
+      case _ => throw new Exception("Expected parameter data to be an ArrayNode")
     }
 
-    val payload: ObjectNode = objectMapper.createObjectNode()
-    payload.set("dashcards", dashcardsArray)
+    val updatedParameterJson: List[ObjectNode] = parameterJson.elements().asScala.map {
+      case param: ObjectNode => param
+      case _ => throw new Exception("Expected all parameters to be ObjectNodes")
+    }.toList
 
-    val response = metabaseUtil.addQuestionCardToDashboard(dashboardId, payload.toString)
-    println(s"✔ Successfully pushed ${questionCards.size} cards to dashboard $dashboardId | Response: $response")
+    val dashboardResponse: String = metabaseUtil.getDashboardDetailsById(dashboardId)
+    val dashboardJson = objectMapper.readTree(dashboardResponse)
+    val currentParametersJson: ArrayNode = dashboardJson.path("parameters") match {
+      case array: ArrayNode => array
+      case _ => objectMapper.createArrayNode()
+    }
+
+    val finalParametersJson = objectMapper.createArrayNode()
+    currentParametersJson.elements().asScala.foreach(finalParametersJson.add)
+    updatedParameterJson.foreach(finalParametersJson.add)
+
+    val updatePayload = objectMapper.createObjectNode()
+    updatePayload.set("parameters", finalParametersJson)
+
+    metabaseUtil.addQuestionCardToDashboard(dashboardId, updatePayload.toString)
+    println(s"----------------Successfully updated Admin dashboard parameter ----------------")
   }
-
 }
