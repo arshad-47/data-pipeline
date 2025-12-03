@@ -1,0 +1,48 @@
+########################################
+# AWS S3 CONFIGURATION
+########################################
+
+fs.s3a.access.key: AWS_ACCESS_KEY
+fs.s3a.secret.key: AWS_SECRET_KEY
+fs.s3a.endpoint: s3.amazonaws.com
+fs.s3a.path.style.access: true
+
+
+########################################
+# AZURE BLOB STORAGE CONFIGURATION
+########################################
+# Replace ACCOUNT_NAME with your Azure storage account name
+
+fs.azure.account.key.ACCOUNT_NAME.blob.core.windows.net: YOUR_AZURE_KEY
+fs.azure.override.authority.enable: true
+
+
+########################################
+# GOOGLE CLOUD STORAGE (GCS)
+########################################
+
+fs.gs.project.id: your-gcp-project-id
+google.cloud.auth.service.account.enable: true
+google.cloud.auth.service.account.keyfile: /opt/keys/gcp.json
+
+
+########################################
+# ORACLE CLOUD (OCI) OBJECT STORAGE
+########################################
+
+fs.oci.config.file: /opt/keys/oci.config
+fs.oci.profile: DEFAULT
+
+
+########################################
+# FLINK CORE CONFIGURATION
+########################################
+jobmanager.rpc.address: jobmanager
+jobmanager.memory.process.size: 1600m
+taskmanager.memory.process.size: 1728m
+taskmanager.numberOfTaskSlots: 3
+parallelism.default: 1
+#jobmanager.rpc.address: a02586b43827
+blob.server.port: 6124
+query.server.port: 6125
+#taskmanager.numberOfTaskSlots: 1
